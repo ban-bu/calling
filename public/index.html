@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多人语音通话</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            padding: 30px;
+            max-width: 800px;
+            width: 90%;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .room-section {
+            margin-bottom: 30px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #5a6fd8;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .mute-btn {
+            background: #e74c3c;
+        }
+
+        .mute-btn:hover {
+            background: #c0392b;
+        }
+
+        .mute-btn.muted {
+            background: #95a5a6;
+        }
+
+        .users-section {
+            margin-bottom: 20px;
+        }
+
+        .users-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .user-card {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            min-width: 200px;
+            text-align: center;
+        }
+
+        .user-card.speaking {
+            border-color: #28a745;
+            box-shadow: 0 0 10px rgba(40, 167, 69, 0.3);
+        }
+
+        .user-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+
+        .user-status {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .error {
+            color: #e74c3c;
+            background: #fdf2f2;
+            border: 1px solid #e74c3c;
+        }
+
+        .success {
+            color: #27ae60;
+            background: #f2fdf5;
+            border: 1px solid #27ae60;
+        }
+
+        .audio-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #95a5a6;
+            margin: 0 auto 10px;
+            transition: background 0.3s;
+        }
+
+        .audio-indicator.active {
+            background: #27ae60;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ 多人语音通话</h1>
+            <p>支持多人实时语音通话</p>
+        </div>
+
+        <div class="room-section">
+            <div class="input-group">
+                <input type="text" id="roomId" placeholder="输入房间号" value="">
+                <input type="text" id="userName" placeholder="输入您的昵称" value="">
+                <button id="joinBtn">加入房间</button>
+            </div>
+        </div>
+
+        <div id="callSection" class="hidden">
+            <div class="controls">
+                <button id="muteBtn" class="mute-btn">🔇 静音</button>
+                <button id="leaveBtn">🚪 离开房间</button>
+            </div>
+
+            <div class="users-section">
+                <h3>房间成员</h3>
+                <div id="usersList" class="users-list"></div>
+            </div>
+        </div>
+
+        <div id="status" class="status">
+            请输入房间号和昵称加入通话
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        class VoiceChat {
+            constructor() {
+                this.socket = null;
+                this.localStream = null;
+                this.peers = new Map();
+                this.roomId = null;
+                this.userName = null;
+                this.isMuted = false;
+                
+                this.initializeElements();
+                this.bindEvents();
+            }
+
+            initializeElements() {
+                this.roomIdInput = document.getElementById('roomId');
+                this.userNameInput = document.getElementById('userName');
+                this.joinBtn = document.getElementById('joinBtn');
+                this.muteBtn = document.getElementById('muteBtn');
+                this.leaveBtn = document.getElementById('leaveBtn');
+                this.callSection = document.getElementById('callSection');
+                this.usersList = document.getElementById('usersList');
+                this.status = document.getElementById('status');
+                
+                // 生成随机房间号
+                this.roomIdInput.value = Math.random().toString(36).substring(7);
+            }
+
+            bindEvents() {
+                this.joinBtn.addEventListener('click', () => this.joinRoom());
+                this.muteBtn.addEventListener('click', () => this.toggleMute());
+                this.leaveBtn.addEventListener('click', () => this.leaveRoom());
+            }
+
+            updateStatus(message, type = '') {
+                this.status.textContent = message;
+                this.status.className = 'status ' + type;
+            }
+
+            async joinRoom() {
+                this.roomId = this.roomIdInput.value.trim();
+                this.userName = this.userNameInput.value.trim();
+
+                if (!this.roomId || !this.userName) {
+                    this.updateStatus('请输入房间号和昵称', 'error');
+                    return;
+                }
+
+                try {
+                    this.updateStatus('正在获取麦克风权限...', '');
+                    
+                    // 获取音频流
+                    this.localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+
+                    this.updateStatus('正在连接服务器...', '');
+                    
+                    // 连接Socket.IO
+                    this.socket = io();
+                    this.bindSocketEvents();
+                    
+                    // 加入房间
+                    this.socket.emit('join-room', this.roomId, this.userName);
+                    
+                    this.callSection.classList.remove('hidden');
+                    this.joinBtn.disabled = true;
+                    this.updateStatus(`已加入房间: ${this.roomId}`, 'success');
+                    
+                } catch (error) {
+                    console.error('加入房间失败:', error);
+                    this.updateStatus('无法获取麦克风权限，请检查浏览器设置', 'error');
+                }
+            }
+
+            bindSocketEvents() {
+                this.socket.on('user-joined', (userId) => {
+                    console.log('用户加入:', userId);
+                    this.updateStatus(`${userId} 加入了房间`, 'success');
+                    this.createPeerConnection(userId, true);
+                });
+
+                this.socket.on('user-left', (userId) => {
+                    console.log('用户离开:', userId);
+                    this.updateStatus(`${userId} 离开了房间`, '');
+                    this.removePeer(userId);
+                });
+
+                this.socket.on('room-users', (users) => {
+                    console.log('房间用户:', users);
+                    this.updateUsersList(users);
+                });
+
+                this.socket.on('offer', async (data) => {
+                    console.log('收到offer:', data.caller);
+                    await this.handleOffer(data);
+                });
+
+                this.socket.on('answer', async (data) => {
+                    console.log('收到answer:', data.answerer);
+                    await this.handleAnswer(data);
+                });
+
+                this.socket.on('ice-candidate', async (data) => {
+                    console.log('收到ICE candidate:', data.sender);
+                    await this.handleIceCandidate(data);
+                });
+            }
+
+            async createPeerConnection(userId, isInitiator) {
+                const peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+
+                // 添加本地音频流
+                this.localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, this.localStream);
+                });
+
+                // 处理远程音频流
+                peerConnection.ontrack = (event) => {
+                    console.log('收到远程音频流:', userId);
+                    this.handleRemoteStream(userId, event.streams[0]);
+                };
+
+                // 处理ICE候选
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        this.socket.emit('ice-candidate', {
+                            target: userId,
+                            candidate: event.candidate
+                        });
+                    }
+                };
+
+                this.peers.set(userId, peerConnection);
+
+                if (isInitiator) {
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    this.socket.emit('offer', {
+                        target: userId,
+                        offer: offer
+                    });
+                }
+            }
+
+            async handleOffer(data) {
+                const peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+
+                // 添加本地音频流
+                this.localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, this.localStream);
+                });
+
+                // 处理远程音频流
+                peerConnection.ontrack = (event) => {
+                    console.log('收到远程音频流:', data.caller);
+                    this.handleRemoteStream(data.caller, event.streams[0]);
+                };
+
+                // 处理ICE候选
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        this.socket.emit('ice-candidate', {
+                            target: data.caller,
+                            candidate: event.candidate
+                        });
+                    }
+                };
+
+                this.peers.set(data.caller, peerConnection);
+
+                await peerConnection.setRemoteDescription(data.offer);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                this.socket.emit('answer', {
+                    target: data.caller,
+                    answer: answer
+                });
+            }
+
+            async handleAnswer(data) {
+                const peerConnection = this.peers.get(data.answerer);
+                if (peerConnection) {
+                    await peerConnection.setRemoteDescription(data.answer);
+                }
+            }
+
+            async handleIceCandidate(data) {
+                const peerConnection = this.peers.get(data.sender);
+                if (peerConnection) {
+                    await peerConnection.addIceCandidate(data.candidate);
+                }
+            }
+
+            handleRemoteStream(userId, stream) {
+                // 创建音频元素播放远程音频
+                let audioElement = document.getElementById(`audio-${userId}`);
+                if (!audioElement) {
+                    audioElement = document.createElement('audio');
+                    audioElement.id = `audio-${userId}`;
+                    audioElement.autoplay = true;
+                    document.body.appendChild(audioElement);
+                }
+                audioElement.srcObject = stream;
+                
+                // 添加音频活动检测
+                this.addAudioLevelDetection(userId, stream);
+            }
+
+            addAudioLevelDetection(userId, stream) {
+                const audioContext = new AudioContext();
+                const source = audioContext.createMediaStreamSource(stream);
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                const checkAudioLevel = () => {
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                    
+                    const indicator = document.querySelector(`[data-user="${userId}"] .audio-indicator`);
+                    if (indicator) {
+                        if (average > 10) {
+                            indicator.classList.add('active');
+                        } else {
+                            indicator.classList.remove('active');
+                        }
+                    }
+                    
+                    requestAnimationFrame(checkAudioLevel);
+                };
+                
+                checkAudioLevel();
+            }
+
+            removePeer(userId) {
+                const peerConnection = this.peers.get(userId);
+                if (peerConnection) {
+                    peerConnection.close();
+                    this.peers.delete(userId);
+                }
+                
+                // 移除音频元素
+                const audioElement = document.getElementById(`audio-${userId}`);
+                if (audioElement) {
+                    audioElement.remove();
+                }
+                
+                // 更新用户列表
+                const userCard = document.querySelector(`[data-user="${userId}"]`);
+                if (userCard) {
+                    userCard.remove();
+                }
+            }
+
+            updateUsersList(users) {
+                this.usersList.innerHTML = '';
+                users.forEach(user => {
+                    const userCard = document.createElement('div');
+                    userCard.className = 'user-card';
+                    userCard.setAttribute('data-user', user);
+                    userCard.innerHTML = `
+                        <div class="audio-indicator"></div>
+                        <div class="user-name">${user}</div>
+                        <div class="user-status">${user === this.userName ? '(您)' : '在线'}</div>
+                    `;
+                    this.usersList.appendChild(userCard);
+                });
+            }
+
+            toggleMute() {
+                this.isMuted = !this.isMuted;
+                
+                if (this.localStream) {
+                    this.localStream.getAudioTracks().forEach(track => {
+                        track.enabled = !this.isMuted;
+                    });
+                }
+                
+                this.muteBtn.textContent = this.isMuted ? '🔊 取消静音' : '🔇 静音';
+                this.muteBtn.classList.toggle('muted', this.isMuted);
+                
+                this.updateStatus(this.isMuted ? '已静音' : '已取消静音', '');
+            }
+
+            leaveRoom() {
+                // 关闭所有peer连接
+                this.peers.forEach(peerConnection => {
+                    peerConnection.close();
+                });
+                this.peers.clear();
+                
+                // 停止本地流
+                if (this.localStream) {
+                    this.localStream.getTracks().forEach(track => {
+                        track.stop();
+                    });
+                    this.localStream = null;
+                }
+                
+                // 断开socket连接
+                if (this.socket) {
+                    this.socket.disconnect();
+                    this.socket = null;
+                }
+                
+                // 移除所有音频元素
+                document.querySelectorAll('audio[id^="audio-"]').forEach(audio => {
+                    audio.remove();
+                });
+                
+                // 重置UI
+                this.callSection.classList.add('hidden');
+                this.joinBtn.disabled = false;
+                this.isMuted = false;
+                this.muteBtn.textContent = '🔇 静音';
+                this.muteBtn.classList.remove('muted');
+                this.usersList.innerHTML = '';
+                
+                this.updateStatus('已离开房间', '');
+            }
+        }
+
+        // 初始化应用
+        const voiceChat = new VoiceChat();
+    </script>
+</body>
+</html>
