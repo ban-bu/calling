@@ -19,6 +19,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // 存储房间和用户信息
 const rooms = new Map();
+const callSessions = new Map(); // 存储通话会话信息
 
 // 提供静态文件
 app.get('/', (req, res) => {
@@ -48,10 +49,37 @@ io.on('connection', (socket) => {
     // 通知房间内其他用户
     socket.to(roomId).emit('user-joined', userId);
     
-    // 发送当前房间用户列表
+    // 发送当前房间用户列表给新用户
     socket.emit('room-users', Array.from(room));
     
+    // 通知房间内所有用户更新用户列表
+    io.to(roomId).emit('room-users', Array.from(room));
+    
     console.log(`房间 ${roomId} 当前用户:`, Array.from(room));
+  });
+
+  // 通话邀请处理
+  socket.on('call-invite', (data) => {
+    console.log(`${socket.userId} 邀请 ${data.target} 通话`);
+    socket.to(data.target).emit('call-invite', {
+      caller: socket.userId,
+      roomId: socket.roomId
+    });
+  });
+
+  socket.on('call-response', (data) => {
+    console.log(`${socket.userId} 响应通话邀请: ${data.accepted}`);
+    socket.to(data.caller).emit('call-response', {
+      responder: socket.userId,
+      accepted: data.accepted
+    });
+    
+    if (data.accepted) {
+      // 如果接受通话，通知房间内其他人开始通话
+      io.to(socket.roomId).emit('call-started', {
+        participants: [data.caller, socket.userId]
+      });
+    }
   });
 
   // WebRTC 信令处理
