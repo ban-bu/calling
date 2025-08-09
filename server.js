@@ -1,134 +1,122 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const { WebSocketServer } = require('ws');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-// 中间件
 app.use(cors());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// 存储房间和用户信息
-const rooms = new Map();
-const callSessions = new Map(); // 存储通话会话信息
-
-// 提供静态文件
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Socket.IO 连接处理
-io.on('connection', (socket) => {
-  console.log('用户连接:', socket.id);
-
-  // 加入房间
-  socket.on('join-room', (roomId, userId) => {
-    console.log(`用户 ${userId} 加入房间 ${roomId}`);
-    
-    socket.join(roomId);
-    socket.roomId = roomId;
-    socket.userId = userId;
-
-    // 初始化房间
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, new Set());
-    }
-    
-    const room = rooms.get(roomId);
-    room.add(userId);
-
-    // 通知房间内其他用户
-    socket.to(roomId).emit('user-joined', userId);
-    
-    // 发送当前房间用户列表给新用户
-    socket.emit('room-users', Array.from(room));
-    
-    // 通知房间内所有用户更新用户列表
-    io.to(roomId).emit('room-users', Array.from(room));
-    
-    console.log(`房间 ${roomId} 当前用户:`, Array.from(room));
-  });
-
-  // 通话邀请处理
-  socket.on('call-invite', (data) => {
-    console.log(`${socket.userId} 邀请 ${data.target} 通话`);
-    socket.to(data.target).emit('call-invite', {
-      caller: socket.userId,
-      roomId: socket.roomId
-    });
-  });
-
-  socket.on('call-response', (data) => {
-    console.log(`${socket.userId} 响应通话邀请: ${data.accepted}`);
-    socket.to(data.caller).emit('call-response', {
-      responder: socket.userId,
-      accepted: data.accepted
-    });
-    
-    if (data.accepted) {
-      // 如果接受通话，通知房间内其他人开始通话
-      io.to(socket.roomId).emit('call-started', {
-        participants: [data.caller, socket.userId]
-      });
-    }
-  });
-
-  // WebRTC 信令处理
-  socket.on('offer', (data) => {
-    console.log('收到offer:', data.target);
-    socket.to(data.target).emit('offer', {
-      offer: data.offer,
-      caller: socket.userId
-    });
-  });
-
-  socket.on('answer', (data) => {
-    console.log('收到answer:', data.target);
-    socket.to(data.target).emit('answer', {
-      answer: data.answer,
-      answerer: socket.userId
-    });
-  });
-
-  socket.on('ice-candidate', (data) => {
-    console.log('收到ICE candidate:', data.target);
-    socket.to(data.target).emit('ice-candidate', {
-      candidate: data.candidate,
-      sender: socket.userId
-    });
-  });
-
-  // 断开连接处理
-  socket.on('disconnect', () => {
-    console.log('用户断开连接:', socket.id);
-    
-    if (socket.roomId && socket.userId) {
-      const room = rooms.get(socket.roomId);
-      if (room) {
-        room.delete(socket.userId);
-        if (room.size === 0) {
-          rooms.delete(socket.roomId);
-        }
-        
-        // 通知房间内其他用户
-        socket.to(socket.roomId).emit('user-left', socket.userId);
-        console.log(`用户 ${socket.userId} 离开房间 ${socket.roomId}`);
-      }
-    }
-  });
-});
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-  console.log(`服务器运行在端口 ${PORT}`);
+// Serve static files
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Expose selected env to client
+app.get('/env.js', (_req, res) => {
+  const turnUrl = process.env.TURN_URL || '';
+  const turnUser = process.env.TURN_USERNAME || '';
+  const turnPass = process.env.TURN_PASSWORD || '';
+  res.type('application/javascript').send(
+    `window.TURN_URL=${JSON.stringify(turnUrl)};\n` +
+    `window.TURN_USERNAME=${JSON.stringify(turnUser)};\n` +
+    `window.TURN_PASSWORD=${JSON.stringify(turnPass)};\n`
+  );
 });
+
+const server = http.createServer(app);
+
+// Simple in-memory rooms
+// roomId -> Set of ws
+const rooms = new Map();
+
+function getPeers(roomId) {
+  return rooms.get(roomId) || new Set();
+}
+
+function broadcast(roomId, data, except) {
+  const peers = getPeers(roomId);
+  for (const peer of peers) {
+    if (peer !== except && peer.readyState === 1) {
+      peer.send(JSON.stringify(data));
+    }
+  }
+}
+
+const wss = new WebSocketServer({ server });
+
+wss.on('connection', (ws) => {
+  ws.roomId = null;
+  ws.clientId = Math.random().toString(36).slice(2, 10);
+
+  ws.on('message', (message) => {
+    let msg;
+    try {
+      msg = JSON.parse(message);
+    } catch (e) {
+      return;
+    }
+    const { type, roomId, payload } = msg;
+
+    if (type === 'join') {
+      ws.roomId = roomId;
+      if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+      rooms.get(roomId).add(ws);
+      // notify others
+      broadcast(roomId, { type: 'peer-joined', clientId: ws.clientId }, ws);
+      // reply self with peers list
+      const peers = Array.from(getPeers(roomId))
+        .filter((p) => p !== ws)
+        .map((p) => p.clientId);
+      ws.send(JSON.stringify({ type: 'peers', peers }));
+      return;
+    }
+
+    if (!ws.roomId) return;
+
+    // signaling relay
+    if (type === 'signal') {
+      const { targetId, data } = payload || {};
+      const peers = getPeers(ws.roomId);
+      for (const peer of peers) {
+        if (peer.clientId === targetId && peer.readyState === 1) {
+          peer.send(
+            JSON.stringify({
+              type: 'signal',
+              from: ws.clientId,
+              data,
+            })
+          );
+          break;
+        }
+      }
+      return;
+    }
+
+    if (type === 'leave') {
+      cleanup(ws);
+      return;
+    }
+  });
+
+  ws.on('close', () => cleanup(ws));
+});
+
+function cleanup(ws) {
+  const { roomId } = ws;
+  if (!roomId) return;
+  const peers = rooms.get(roomId);
+  if (peers) {
+    peers.delete(ws);
+    if (peers.size === 0) rooms.delete(roomId);
+    else broadcast(roomId, { type: 'peer-left', clientId: ws.clientId }, ws);
+  }
+  ws.roomId = null;
+}
+
+server.listen(PORT, () => {
+  console.log(`Server listening on http://0.0.0.0:${PORT}`);
+});
+
+
